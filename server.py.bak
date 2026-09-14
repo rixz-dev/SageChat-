@@ -1,0 +1,882 @@
+#!/usr/bin/env python3
+"""
+Sagechat backend — local agentic web chat di atas 9Router.
+
+Fitur: proxy chat streaming (SSE) + tool loop (shell sandbox & GitHub),
+history per-sesi, memory sederhana, upload file/gambar, statistik token,
+permission-gate untuk aksi berisiko (shell di luar sandbox, SEMUA aksi
+tulis GitHub — tanpa kecuali).
+
+Jalanin:
+    pip install -r requirements.txt
+    python server.py
+    buka http://127.0.0.1:5057
+"""
+
+import re
+import json
+import uuid
+import time
+import base64
+import mimetypes
+import threading
+import subprocess
+from pathlib import Path
+
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
+import requests
+
+# GitHub diakses langsung lewat REST API pakai `requests` — bukan PyGithub.
+# Alasan: PyGithub narik pyjwt[crypto] -> cryptography, yang di Termux/Android
+# arm butuh compile native via Rust (maturin), dan itu gagal karena target
+# triple arm-unknown-linux-androideabi ga didukung rustup. requests udah jadi
+# dependency inti Flask, jadi fitur GitHub sekarang zero dependency tambahan.
+GITHUB_API = "https://api.github.com"
+
+# ---------------------------------------------------------------------------
+# PATHS & CONFIG
+# ---------------------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+CHATS_DIR = DATA_DIR / "chats"
+UPLOADS_DIR = DATA_DIR / "uploads"
+CONFIG_PATH = DATA_DIR / "config.json"
+MEMORY_PATH = DATA_DIR / "memory.json"
+STATS_PATH = DATA_DIR / "stats.json"
+UPLOAD_INDEX_PATH = UPLOADS_DIR / "index.json"
+
+for d in (DATA_DIR, CHATS_DIR, UPLOADS_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_CONFIG = {
+    "router_url": "http://localhost:20128",
+    "router_api_key": "",
+    "github_token": "",
+    "github_repo": "",
+    "default_model": "",
+    "agent_mode": True,
+    "sandbox_dir": str(BASE_DIR / "workspace"),
+}
+
+MAX_TOOL_ROUNDS = 8
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15MB
+VISION_HINTS = ["vision", "-vl", "vl-", "gpt-4o", "claude", "gemini", "pixtral", "llava", "qwen2-vl", "qwen-vl"]
+
+app = Flask(__name__, static_folder=str(BASE_DIR / "static"), static_url_path="")
+
+_lock = threading.Lock()
+stop_events: dict[str, threading.Event] = {}
+pending_permissions: dict[str, dict] = {}
+
+
+# ---------------------------------------------------------------------------
+# CONFIG / MEMORY / STATS HELPERS
+# ---------------------------------------------------------------------------
+def _read_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default
+
+
+def _write_json(path: Path, data):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_config():
+    cfg = dict(DEFAULT_CONFIG)
+    cfg.update(_read_json(CONFIG_PATH, {}))
+    return cfg
+
+
+def save_config(patch: dict):
+    cfg = load_config()
+    cfg.update({k: v for k, v in patch.items() if v is not None})
+    _write_json(CONFIG_PATH, cfg)
+    return cfg
+
+
+def public_config(cfg=None):
+    cfg = cfg or load_config()
+    return {
+        "router_url": cfg["router_url"],
+        "default_model": cfg["default_model"],
+        "agent_mode": cfg["agent_mode"],
+        "github_repo": cfg["github_repo"],
+        "sandbox_dir": cfg["sandbox_dir"],
+        "router_api_key_set": bool(cfg.get("router_api_key")),
+        "github_token_set": bool(cfg.get("github_token")),
+        "github_available": True,
+    }
+
+
+def load_memory():
+    return _read_json(MEMORY_PATH, [])
+
+
+def save_memory(items):
+    _write_json(MEMORY_PATH, items)
+
+
+def load_stats():
+    return _read_json(STATS_PATH, {"grand_total": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                                    "per_model": {}, "per_session": {}})
+
+
+def record_usage(session_id, model, usage):
+    stats = load_stats()
+    for bucket in (stats["grand_total"],):
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            bucket[k] = bucket.get(k, 0) + usage.get(k, 0)
+    m = stats["per_model"].setdefault(model, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    s = stats["per_session"].setdefault(session_id, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    for bucket in (m, s):
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            bucket[k] = bucket.get(k, 0) + usage.get(k, 0)
+    _write_json(STATS_PATH, stats)
+
+
+# ---------------------------------------------------------------------------
+# SESSION (CHAT HISTORY) HELPERS
+# ---------------------------------------------------------------------------
+def session_path(sid):
+    return CHATS_DIR / f"{sid}.json"
+
+
+def new_session():
+    cfg = load_config()
+    sid = uuid.uuid4().hex[:12]
+    sess = {
+        "id": sid,
+        "title": "Obrolan baru",
+        "model": cfg.get("default_model") or "",
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "messages": [],  # {role, content, synthetic?, reasoning?}
+    }
+    _write_json(session_path(sid), sess)
+    return sess
+
+
+def load_session(sid):
+    return _read_json(session_path(sid), None)
+
+
+def save_session(sess):
+    sess["updated_at"] = time.time()
+    _write_json(session_path(sess["id"]), sess)
+
+
+def list_sessions():
+    out = []
+    for p in CHATS_DIR.glob("*.json"):
+        s = _read_json(p, None)
+        if s:
+            out.append({"id": s["id"], "title": s.get("title", "Obrolan"),
+                        "updated_at": s.get("updated_at", 0), "model": s.get("model", "")})
+    out.sort(key=lambda x: x["updated_at"], reverse=True)
+    return out
+
+
+def to_api_messages(messages):
+    return [{"role": m["role"], "content": m["content"]} for m in messages]
+
+
+# ---------------------------------------------------------------------------
+# SYSTEM PROMPT BUILDER
+# ---------------------------------------------------------------------------
+CMD_RE = re.compile(r"<<CMD>>\s*(\{.*?\})\s*<<END>>", re.DOTALL)
+GH_RE = re.compile(r"<<GH>>\s*(\{.*?\})\s*<<END>>", re.DOTALL)
+
+
+def build_system_prompt(cfg):
+    sandbox = cfg["sandbox_dir"]
+    memory = load_memory()
+    mem_block = ""
+    if memory:
+        lines = "\n".join(f"- {m['text']}" for m in memory)
+        mem_block = f"\n\nCatatan memori dari user (anggap ini konteks yang sudah diketahui):\n{lines}"
+
+    if not cfg.get("agent_mode"):
+        return ("Kamu adalah asisten chat biasa di Sagechat. Jawab pertanyaan user dengan jelas dan "
+                "ringkas. Kamu TIDAK bisa menjalankan command atau mengubah apapun di luar percakapan "
+                "ini (mode agent sedang nonaktif)." + mem_block)
+
+    gh_block = ""
+    if cfg.get("github_repo"):
+        gh_block = f"""
+
+Kamu juga terhubung ke repo GitHub: {cfg['github_repo']} (bisa dioverride via field "repo").
+Untuk aksi GitHub, keluarkan blok:
+<<GH>>
+{{"action": "read_file|list_tree|list_branches|create_file|update_file|delete_file|create_branch|create_pr|list_workflows|trigger_workflow",
+  "repo": "owner/name (opsional)", "path": "...", "content": "...", "message": "pesan commit",
+  "branch": "...", "base_branch": "...", "new_branch": "...", "title": "...", "body": "...",
+  "workflow_file": "nama-file.yml", "ref": "...", "reason": "kenapa aksi ini perlu"}}
+<<END>>
+SEMUA aksi tulis (create_file/update_file/delete_file/create_branch/create_pr/trigger_workflow)
+akan SELALU minta konfirmasi manual dari user, termasuk kalau targetnya di .github/workflows/ —
+ini bukan bug, ini kebijakan keamanan tetap. Jangan mengulang aksi yang baru saja ditolak user."""
+
+    return f"""Kamu adalah AI agent di web app "Sagechat" yang bisa menjalankan perintah shell
+untuk membantu user dengan tugas pemrograman.
+
+Sandbox root shell kamu: {sandbox}
+
+Untuk command shell, keluarkan blok PERSIS:
+<<CMD>>
+{{"cmd": "perintah shell", "cwd": "path relatif/absolut (opsional)", "reason": "alasan singkat"}}
+<<END>>
+
+Aturan:
+- Satu blok tool per giliran. Tunggu hasilnya sebelum lanjut ke command/aksi berikutnya.
+- Command di luar sandbox root akan diminta izin ke user — jujur saja di "reason".
+- Kalau tugas selesai tanpa perlu tool lagi, jawab teks biasa tanpa blok apapun.
+- Jangan jalankan command destruktif (rm -rf, dd, mkfs) tanpa alasan sangat eksplisit.
+{gh_block}{mem_block}"""
+
+
+# ---------------------------------------------------------------------------
+# 9ROUTER STREAMING
+# ---------------------------------------------------------------------------
+def sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def stream_chat_web(messages, model, stop_event: threading.Event):
+    cfg = load_config()
+    url = cfg["router_url"].rstrip("/") + "/v1/chat/completions"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg['router_api_key']}"}
+    payload = {"model": model, "messages": messages, "stream": True}
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=180)
+    except requests.RequestException as e:
+        yield {"type": "error", "message": f"Gagal konek ke router: {e}"}
+        return
+
+    if resp.status_code != 200:
+        yield {"type": "error", "message": f"Router error {resp.status_code}: {resp.text[:300]}"}
+        return
+
+    try:
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if stop_event.is_set():
+                resp.close()
+                yield {"type": "stopped"}
+                return
+            if not raw_line or not raw_line.startswith("data:"):
+                continue
+            data = raw_line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if choices:
+                delta = choices[0].get("delta", {})
+                if delta.get("reasoning_content"):
+                    yield {"type": "reasoning", "text": delta["reasoning_content"]}
+                if delta.get("content"):
+                    yield {"type": "content", "text": delta["content"]}
+            if chunk.get("usage"):
+                yield {"type": "usage", **chunk["usage"]}
+    except requests.RequestException as e:
+        yield {"type": "error", "message": f"Koneksi terputus: {e}"}
+    finally:
+        resp.close()
+
+
+# ---------------------------------------------------------------------------
+# PERMISSION GATE
+# ---------------------------------------------------------------------------
+def ask_permission(kind: str, detail: dict):
+    """Daftarkan permintaan izin, return (perm_id, sse_event_dict, threading.Event) TANPA nge-block.
+    Caller wajib yield event dulu ke client, baru panggil .wait() supaya client sempat lihat dialognya."""
+    perm_id = uuid.uuid4().hex[:10]
+    ev = threading.Event()
+    pending_permissions[perm_id] = {"event": ev, "allow": False}
+    req_ev = {"type": "permission_request", "permission_id": perm_id, "kind": kind, **detail}
+    return perm_id, req_ev, ev
+
+
+# ---------------------------------------------------------------------------
+# SHELL TOOL (sandbox sama seperti agent.py)
+# ---------------------------------------------------------------------------
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def execute_shell(cmd: str, cwd_field, reason: str):
+    cfg = load_config()
+    sandbox = Path(cfg["sandbox_dir"])
+    sandbox.mkdir(parents=True, exist_ok=True)
+    target = sandbox if not cwd_field else Path(cwd_field)
+    target = target if target.is_absolute() else (sandbox / target)
+    target = target.resolve()
+    inside = is_within(target, sandbox)
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(cmd, shell=True, cwd=str(target), capture_output=True, text=True, timeout=60)
+        out = (proc.stdout or "") + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
+        return out[:4000] or "(tidak ada output)", proc.returncode, inside, str(target)
+    except subprocess.TimeoutExpired:
+        return "[TIMEOUT setelah 60 detik]", -1, inside, str(target)
+    except Exception as e:
+        return f"[ERROR: {e}]", -1, inside, str(target)
+
+
+# ---------------------------------------------------------------------------
+# GITHUB TOOL
+# ---------------------------------------------------------------------------
+WORKFLOW_PREFIX = ".github/workflows/"
+GH_READ_ACTIONS = {"read_file", "list_tree", "list_branches", "list_workflows"}
+GH_WRITE_ACTIONS = {"create_file", "update_file", "delete_file", "create_branch", "create_pr", "trigger_workflow"}
+
+
+class GithubAPIError(Exception):
+    """Error dari GitHub REST API (status HTTP != 2xx)."""
+    def __init__(self, status: int, message: str):
+        self.status = status
+        self.message = message
+        super().__init__(f"{status}: {message}")
+
+
+def _gh_request(method: str, token: str, path: str, params: dict | None = None,
+                 json_body: dict | None = None):
+    """Panggil GitHub REST API v3 langsung. Ganti total dari PyGithub."""
+    resp = requests.request(
+        method,
+        f"{GITHUB_API}{path}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        params=params,
+        json=json_body,
+        timeout=20,
+    )
+    if resp.status_code >= 400:
+        try:
+            msg = resp.json().get("message", resp.text)
+        except ValueError:
+            msg = resp.text or f"HTTP {resp.status_code}"
+        raise GithubAPIError(resp.status_code, msg)
+    if resp.status_code == 204 or not resp.content:
+        return {}
+    return resp.json()
+
+
+def _resolve_repo(token: str, repo_name: str | None = None):
+    """Ganti get_repo() PyGithub — return (full_name, default_branch)."""
+    cfg = load_config()
+    name = repo_name or cfg.get("github_repo")
+    if not name:
+        raise RuntimeError("Repo GitHub belum diset (Pengaturan atau field 'repo').")
+    meta = _gh_request("GET", token, f"/repos/{name}")
+    return name, meta["default_branch"]
+
+
+def execute_github(action_data: dict):
+    cfg = load_config()
+    token = cfg.get("github_token")
+    if not token:
+        return "[GITHUB ERROR: token belum diset di Pengaturan]", False
+
+    action = action_data.get("action", "")
+    try:
+        repo_name, default_branch = _resolve_repo(token, action_data.get("repo"))
+        branch = action_data.get("branch") or default_branch
+        path = action_data.get("path", "")
+
+        if action == "list_tree":
+            items = _gh_request("GET", token, f"/repos/{repo_name}/contents/{path}", params={"ref": branch})
+            if not isinstance(items, list):
+                items = [items]
+            return json.dumps([{"name": i["name"], "path": i["path"], "type": i["type"]} for i in items]), True
+
+        if action == "read_file":
+            f = _gh_request("GET", token, f"/repos/{repo_name}/contents/{path}", params={"ref": branch})
+            content = base64.b64decode(f["content"]).decode("utf-8", errors="replace")
+            return content[:6000], True
+
+        if action == "list_branches":
+            branches = _gh_request("GET", token, f"/repos/{repo_name}/branches")
+            return json.dumps([b["name"] for b in branches]), True
+
+        if action == "list_workflows":
+            data = _gh_request("GET", token, f"/repos/{repo_name}/actions/workflows")
+            return json.dumps([{"name": w["name"], "path": w["path"]} for w in data.get("workflows", [])]), True
+
+        if action == "create_file":
+            body = {
+                "message": action_data.get("message", "create via Sagechat"),
+                "content": base64.b64encode(action_data.get("content", "").encode("utf-8")).decode(),
+                "branch": branch,
+            }
+            _gh_request("PUT", token, f"/repos/{repo_name}/contents/{path}", json_body=body)
+            return f"File dibuat: {path} @ {branch}", True
+
+        if action == "update_file":
+            existing = _gh_request("GET", token, f"/repos/{repo_name}/contents/{path}", params={"ref": branch})
+            body = {
+                "message": action_data.get("message", "update via Sagechat"),
+                "content": base64.b64encode(action_data.get("content", "").encode("utf-8")).decode(),
+                "branch": branch,
+                "sha": existing["sha"],
+            }
+            _gh_request("PUT", token, f"/repos/{repo_name}/contents/{path}", json_body=body)
+            return f"File diupdate: {path} @ {branch}", True
+
+        if action == "delete_file":
+            existing = _gh_request("GET", token, f"/repos/{repo_name}/contents/{path}", params={"ref": branch})
+            body = {
+                "message": action_data.get("message", "delete via Sagechat"),
+                "sha": existing["sha"],
+                "branch": branch,
+            }
+            _gh_request("DELETE", token, f"/repos/{repo_name}/contents/{path}", json_body=body)
+            return f"File dihapus: {path} @ {branch}", True
+
+        if action == "create_branch":
+            base_branch = action_data.get("base_branch") or default_branch
+            new_branch = action_data.get("new_branch")
+            if not new_branch:
+                return "[GITHUB ERROR: 'new_branch' wajib diisi]", False
+            ref = _gh_request("GET", token, f"/repos/{repo_name}/git/ref/heads/{base_branch}")
+            sha = ref["object"]["sha"]
+            _gh_request("POST", token, f"/repos/{repo_name}/git/refs",
+                        json_body={"ref": f"refs/heads/{new_branch}", "sha": sha})
+            return f"Branch dibuat: {new_branch}", True
+
+        if action == "create_pr":
+            body = {
+                "title": action_data.get("title", "PR via Sagechat"),
+                "body": action_data.get("body", ""),
+                "head": action_data.get("branch"),
+                "base": action_data.get("base_branch") or default_branch,
+            }
+            pr = _gh_request("POST", token, f"/repos/{repo_name}/pulls", json_body=body)
+            return f"PR dibuat: #{pr['number']} — {pr['html_url']}", True
+
+        if action == "trigger_workflow":
+            workflow_file = action_data.get("workflow_file")
+            if not workflow_file:
+                return "[GITHUB ERROR: 'workflow_file' wajib diisi]", False
+            body = {
+                "ref": action_data.get("ref") or default_branch,
+                "inputs": action_data.get("inputs") or {},
+            }
+            _gh_request("POST", token, f"/repos/{repo_name}/actions/workflows/{workflow_file}/dispatches",
+                        json_body=body)
+            return f"Workflow dipicu: {workflow_file}", True
+
+        return f"[GITHUB ERROR: aksi tidak dikenal: {action}]", False
+
+    except GithubAPIError as e:
+        return f"[GITHUB ERROR {e.status}: {e.message}]", False
+    except RuntimeError as e:
+        return f"[GITHUB ERROR: {e}]", False
+    except requests.RequestException as e:
+        return f"[GITHUB ERROR: koneksi gagal — {e}]", False
+
+
+# ---------------------------------------------------------------------------
+# TURN ORCHESTRATION (generator -> SSE)
+# ---------------------------------------------------------------------------
+def run_turn(session_id):
+    cfg = load_config()
+    sess = load_session(session_id)
+    model = sess.get("model") or cfg.get("default_model")
+    if not model:
+        yield sse({"type": "error", "message": "Belum ada model dipilih."})
+        yield sse({"type": "done"})
+        return
+
+    turn_id = uuid.uuid4().hex[:10]
+    stop_event = threading.Event()
+    stop_events[turn_id] = stop_event
+    yield sse({"type": "turn_start", "turn_id": turn_id})
+
+    try:
+        for _ in range(MAX_TOOL_ROUNDS):
+            if stop_event.is_set():
+                yield sse({"type": "stopped"})
+                return
+
+            system_prompt = build_system_prompt(cfg)
+            api_messages = [{"role": "system", "content": system_prompt}] + to_api_messages(sess["messages"])
+
+            buf_content, buf_reasoning = "", ""
+            for ev in stream_chat_web(api_messages, model, stop_event):
+                if ev["type"] == "content":
+                    buf_content += ev["text"]
+                elif ev["type"] == "reasoning":
+                    buf_reasoning += ev["text"]
+                elif ev["type"] == "usage":
+                    record_usage(session_id, model, ev)
+                elif ev["type"] == "stopped":
+                    yield sse(ev)
+                    return
+                elif ev["type"] == "error":
+                    yield sse(ev)
+                    yield sse({"type": "done"})
+                    return
+                yield sse(ev)
+
+            sess["messages"].append({"role": "assistant", "content": buf_content,
+                                      "reasoning": buf_reasoning, "synthetic": False})
+            if sess["title"] == "Obrolan baru":
+                first_user = next((m for m in sess["messages"] if m["role"] == "user"), None)
+                if first_user:
+                    sess["title"] = first_user["content"][:48] if isinstance(first_user["content"], str) else "Obrolan"
+            save_session(sess)
+
+            if not cfg.get("agent_mode"):
+                yield sse({"type": "done"})
+                return
+
+            cmd_match = CMD_RE.search(buf_content)
+            gh_match = GH_RE.search(buf_content)
+
+            if not cmd_match and not gh_match:
+                yield sse({"type": "done"})
+                return
+
+            if cmd_match:
+                try:
+                    data = json.loads(cmd_match.group(1))
+                except json.JSONDecodeError as e:
+                    result_text = f"[GAGAL PARSE JSON COMMAND: {e}]"
+                    yield sse({"type": "tool_result", "kind": "shell", "success": False, "output": result_text})
+                else:
+                    cmd, cwd_field, reason = data.get("cmd", ""), data.get("cwd"), data.get("reason", "")
+                    sandbox = Path(cfg["sandbox_dir"])
+                    target = sandbox if not cwd_field else Path(cwd_field)
+                    target = (target if target.is_absolute() else (sandbox / target)).resolve()
+                    inside = is_within(target, sandbox)
+
+                    allow = True
+                    if not inside:
+                        perm_id, req_ev, ev_obj = ask_permission("shell_outside_sandbox",
+                                                                  {"cmd": cmd, "cwd": str(target), "reason": reason})
+                        yield sse(req_ev)
+                        ev_obj.wait(180)
+                        allow = pending_permissions_result(perm_id)
+
+                    if not allow:
+                        result_text, code = "[DITOLAK OLEH USER — command tidak dijalankan]", -1
+                    else:
+                        result_text, code, _, target_str = execute_shell(cmd, cwd_field, reason)
+                    yield sse({"type": "tool_result", "kind": "shell", "cmd": cmd, "success": code == 0,
+                               "output": result_text, "exit_code": code})
+
+                    sess["messages"].append({"role": "user", "synthetic": True,
+                                              "content": f"[HASIL COMMAND]\nexit_code: {code}\noutput:\n{result_text}"})
+                    save_session(sess)
+                    continue
+
+            if gh_match:
+                gdata = {}
+                try:
+                    gdata = json.loads(gh_match.group(1))
+                except json.JSONDecodeError as e:
+                    result_text, ok = f"[GAGAL PARSE JSON GITHUB: {e}]", False
+                else:
+                    action = gdata.get("action", "")
+                    allow = True
+                    if action in GH_WRITE_ACTIONS:
+                        perm_id, req_ev, ev_obj = ask_permission("github_write", {"action": action, **gdata})
+                        yield sse(req_ev)
+                        ev_obj.wait(180)
+                        allow = pending_permissions_result(perm_id)
+                    if not allow:
+                        result_text, ok = "[DITOLAK OLEH USER — aksi GitHub tidak dijalankan]", False
+                    else:
+                        result_text, ok = execute_github(gdata)
+                yield sse({"type": "tool_result", "kind": "github", "action": gdata.get("action"),
+                           "success": ok, "output": result_text})
+                sess["messages"].append({"role": "user", "synthetic": True,
+                                          "content": f"[HASIL GITHUB]\n{result_text}"})
+                save_session(sess)
+                continue
+
+        yield sse({"type": "info", "message": f"Mencapai batas {MAX_TOOL_ROUNDS} giliran tool, berhenti."})
+        yield sse({"type": "done"})
+    finally:
+        stop_events.pop(turn_id, None)
+
+
+def pending_permissions_result(perm_id):
+    rec = pending_permissions.pop(perm_id, None)
+    return bool(rec and rec.get("allow"))
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — static
+# ---------------------------------------------------------------------------
+@app.route("/")
+def index():
+    return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/uploads/<path:fname>")
+def serve_upload(fname):
+    return send_from_directory(str(UPLOADS_DIR), fname)
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — config
+# ---------------------------------------------------------------------------
+@app.route("/api/config", methods=["GET", "POST"])
+def api_config():
+    if request.method == "GET":
+        return jsonify(public_config())
+    patch = request.get_json(force=True, silent=True) or {}
+    cfg = save_config(patch)
+    return jsonify(public_config(cfg))
+
+
+@app.route("/api/models")
+def api_models():
+    cfg = load_config()
+    url = cfg["router_url"].rstrip("/") + "/v1/models"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {cfg['router_api_key']}"}, timeout=15)
+        r.raise_for_status()
+        data = r.json().get("data", [])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+    models = []
+    for m in data:
+        mid = m.get("id", "")
+        vision = any(h in mid.lower() for h in VISION_HINTS)
+        models.append({"id": mid, "vision": vision})
+    return jsonify({"models": models})
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — sessions
+# ---------------------------------------------------------------------------
+@app.route("/api/sessions", methods=["GET", "POST"])
+def api_sessions():
+    if request.method == "GET":
+        return jsonify(list_sessions())
+    return jsonify(new_session())
+
+
+@app.route("/api/sessions/<sid>", methods=["GET", "PATCH", "DELETE"])
+def api_session_detail(sid):
+    sess = load_session(sid)
+    if not sess:
+        return jsonify({"error": "not found"}), 404
+    if request.method == "GET":
+        return jsonify(sess)
+    if request.method == "DELETE":
+        session_path(sid).unlink(missing_ok=True)
+        return jsonify({"ok": True})
+    patch = request.get_json(force=True, silent=True) or {}
+    if "model" in patch:
+        sess["model"] = patch["model"]
+    if "title" in patch:
+        sess["title"] = patch["title"]
+    save_session(sess)
+    return jsonify(sess)
+
+
+@app.route("/api/sessions/<sid>/fork", methods=["POST"])
+def api_session_fork(sid):
+    src = load_session(sid)
+    if not src:
+        return jsonify({"error": "not found"}), 404
+    dup = new_session()
+    dup["title"] = src["title"] + " (fork)"
+    dup["model"] = src["model"]
+    dup["messages"] = json.loads(json.dumps(src["messages"]))
+    save_session(dup)
+    return jsonify(dup)
+
+
+@app.route("/api/sessions/<sid>/export")
+def api_session_export(sid):
+    sess = load_session(sid)
+    if not sess:
+        return jsonify({"error": "not found"}), 404
+    fmt = request.args.get("format", "md")
+    if fmt == "json":
+        return jsonify(sess)
+    lines = [f"# {sess['title']}", ""]
+    for m in sess["messages"]:
+        if m.get("synthetic"):
+            continue
+        who = "**Kamu**" if m["role"] == "user" else "**Agent**"
+        content = m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])
+        lines.append(f"{who}:\n\n{content}\n")
+    return Response("\n".join(lines), mimetype="text/markdown")
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — chat send / stop / permission
+# ---------------------------------------------------------------------------
+@app.route("/api/sessions/<sid>/send", methods=["POST"])
+def api_send(sid):
+    sess = load_session(sid)
+    if not sess:
+        return jsonify({"error": "not found"}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    regenerate = body.get("regenerate", False)
+
+    if regenerate:
+        while sess["messages"] and (sess["messages"][-1]["role"] == "assistant" or sess["messages"][-1].get("synthetic")):
+            sess["messages"].pop()
+    else:
+        text = body.get("text", "")
+        attachments = body.get("attachments", [])
+        upload_index = _read_json(UPLOAD_INDEX_PATH, {})
+        image_parts, extra_text = [], ""
+        for att_id in attachments:
+            meta = upload_index.get(att_id)
+            if not meta:
+                continue
+            fpath = UPLOADS_DIR / meta["stored_name"]
+            if meta.get("is_image"):
+                b64 = base64.b64encode(fpath.read_bytes()).decode()
+                image_parts.append({"type": "image_url",
+                                     "image_url": {"url": f"data:{meta['mime']};base64,{b64}"}})
+            else:
+                try:
+                    content_text = fpath.read_text(encoding="utf-8", errors="replace")[:6000]
+                except Exception:
+                    content_text = "[file biner, tidak bisa dibaca sebagai teks]"
+                extra_text += f"\n\n[Lampiran: {meta['filename']}]\n```\n{content_text}\n```"
+
+        full_text = (text or "") + extra_text
+        if image_parts:
+            content = [{"type": "text", "text": full_text}] + image_parts
+        else:
+            content = full_text
+        sess["messages"].append({"role": "user", "content": content, "synthetic": False})
+        save_session(sess)
+
+    if "model" in body and body["model"]:
+        sess["model"] = body["model"]
+        save_session(sess)
+
+    return Response(stream_with_context(run_turn(sid)), mimetype="text/event-stream")
+
+
+@app.route("/api/turns/<turn_id>/stop", methods=["POST"])
+def api_stop(turn_id):
+    ev = stop_events.get(turn_id)
+    if ev:
+        ev.set()
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "message": "turn tidak ditemukan / sudah selesai"}), 404
+
+
+@app.route("/api/permissions/<perm_id>", methods=["POST"])
+def api_permission(perm_id):
+    body = request.get_json(force=True, silent=True) or {}
+    rec = pending_permissions.get(perm_id)
+    if not rec:
+        return jsonify({"ok": False, "message": "permintaan sudah kadaluarsa"}), 404
+    rec["allow"] = bool(body.get("allow"))
+    rec["event"].set()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — memory
+# ---------------------------------------------------------------------------
+@app.route("/api/memory", methods=["GET", "POST"])
+def api_memory():
+    if request.method == "GET":
+        return jsonify(load_memory())
+    body = request.get_json(force=True, silent=True) or {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "text kosong"}), 400
+    items = load_memory()
+    items.append({"id": uuid.uuid4().hex[:8], "text": text, "created_at": time.time()})
+    save_memory(items)
+    return jsonify(items)
+
+
+@app.route("/api/memory/<mid>", methods=["DELETE"])
+def api_memory_delete(mid):
+    items = [m for m in load_memory() if m["id"] != mid]
+    save_memory(items)
+    return jsonify(items)
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — stats
+# ---------------------------------------------------------------------------
+@app.route("/api/stats")
+def api_stats():
+    return jsonify(load_stats())
+
+
+# ---------------------------------------------------------------------------
+# ROUTES — upload
+# ---------------------------------------------------------------------------
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "tidak ada file"}), 400
+    raw = f.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        return jsonify({"error": f"file terlalu besar (maks {MAX_UPLOAD_BYTES // 1024 // 1024}MB)"}), 400
+
+    mime = f.mimetype or mimetypes.guess_type(f.filename)[0] or "application/octet-stream"
+    is_image = mime.startswith("image/")
+    upload_id = uuid.uuid4().hex[:10]
+    stored_name = f"{upload_id}_{f.filename}"
+    (UPLOADS_DIR / stored_name).write_bytes(raw)
+
+    index = _read_json(UPLOAD_INDEX_PATH, {})
+    index[upload_id] = {"filename": f.filename, "stored_name": stored_name, "mime": mime, "is_image": is_image}
+    _write_json(UPLOAD_INDEX_PATH, index)
+
+    return jsonify({"id": upload_id, "filename": f.filename, "is_image": is_image,
+                     "url": f"/uploads/{stored_name}"})
+
+
+@app.route("/api/github_direct", methods=["POST"])
+def api_github_direct():
+    """Dipanggil langsung dari modal GitHub di UI saat USER klik tombol (Simpan/Hapus/PR/dst).
+    Ini beda dari jalur agent di run_turn(): di sini user sendiri yang menekan tombol di panel,
+    jadi klik itu SUDAH JADI konfirmasi eksplisit — tidak perlu permission-gate tambahan lagi.
+    Kalau AI yang minta lewat obrolan, tetap wajib lewat permission-gate di run_turn()."""
+    action_data = request.get_json(force=True, silent=True) or {}
+    action = action_data.get("action", "")
+    result_text, ok = execute_github(action_data)
+    if not ok:
+        return jsonify({"success": False, "error": result_text, "output": result_text})
+    if action in ("list_tree", "list_workflows"):
+        try:
+            items = json.loads(result_text)
+        except json.JSONDecodeError:
+            items = []
+        return jsonify({"success": True, "items": items})
+    if action == "read_file":
+        return jsonify({"success": True, "content": result_text})
+    return jsonify({"success": True, "output": result_text})
+
+
+if __name__ == "__main__":
+    print(f"Sagechat jalan di http://127.0.0.1:5057  (data: {DATA_DIR})")
+    app.run(host="127.0.0.1", port=5057, threaded=True, debug=False)

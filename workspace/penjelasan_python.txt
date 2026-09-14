@@ -1,0 +1,23 @@
+Python adalah bahasa pemrograman tingkat tinggi yang mudah dibaca dan digunakan.
+
+Kegunaan Python:
+- Pengembangan web
+- Analisis data
+- Kecerdasan buatan
+- Otomasi tugas
+- Pembuatan aplikasi desktop
+- Pengembangan game
+
+Kelebihan Python:
+- Sintaks sederhana
+- Banyak pustaka dan framework
+- Komunitas besar
+- Berjalan di berbagai sistem operasi
+- Cocok untuk pemula maupun profesional
+
+Contoh kode:
+
+nama = "Sagechat"
+print(f"Halo, {nama}!")
+
+Pada contoh tersebut, variabel nama menyimpan teks. Fungsi print() menampilkan teks ke layar.
