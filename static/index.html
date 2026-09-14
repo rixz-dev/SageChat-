@@ -205,8 +205,8 @@
   .log-head{ padding:14px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
   .log-head strong{ font-size:13px; }
   .log-head button{ background:none;border:none;color:var(--text-muted);cursor:pointer; }
-  .log-body{ flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:6px; }
-  .log-entry{ border:1px solid var(--border); border-radius:10px; background:var(--surface-2); font-size:12px; overflow:hidden; }
+  .log-body{ flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:6px; }
+  .log-entry{ border:1px solid var(--border); border-radius:10px; background:var(--surface-2); font-size:12px; overflow:hidden; flex-shrink:0; }
   .log-entry-head{ display:flex; align-items:center; gap:6px; padding:8px 10px; cursor:pointer; }
   .log-entry-head .tag{ font-weight:700; padding:1px 6px; border-radius:5px; font-size:10px; text-transform:uppercase; }
   .tag.thinking{ background:#2b2f45; color:#a3b4d1; }
@@ -815,6 +815,7 @@ function enhanceCodeBlocks(bubble){
 function logEntry(tag, summary, body, extra={}){
   try{
     const logBody = $('#logBody');
+    const nearBottom = logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 40;
     while(logBody.children.length >= 200) logBody.firstElementChild.remove();
     const el = document.createElement('div');
     el.className = 'log-entry';
@@ -832,7 +833,7 @@ function logEntry(tag, summary, body, extra={}){
       el.appendChild(actions);
     }
     logBody.appendChild(el);
-    logBody.scrollTop = logBody.scrollHeight;
+    if(nearBottom) logBody.scrollTop = logBody.scrollHeight;
     return el;
   }catch(e){ return null; }
 }
@@ -984,7 +985,7 @@ async function sendMessage(regen=false){
     $('#bottomWrap').appendChild(box);
   }
 
-  try{ if(typeof sageLoader !== 'undefined' && sageLoader && sageLoader.done) sageLoader = null; }catch(e){}
+  try{ if(sageLoader && !sageLoader.done) finishSageLoader('Dibatalkan (pesan baru dikirim)'); sageLoader = null; }catch(e){}
   if(!regen){
     const atts = [...state.attachments];
     let userMsg;
@@ -1115,6 +1116,8 @@ async function sendMessage(regen=false){
       logEntry('permission', summary, JSON.stringify(ev, null, 2), {permissionId: ev.permission_id});
       openLogDrawer();
       try{ $('#logToggleBtn').classList.add('active-dot'); }catch(e){}
+      toast('⚠️ AI minta izin: ' + summary + ' — buka panel log untuk Izinkan/Tolak', true);
+      finishSageLoader('Menunggu izinmu — cek panel log');
     }
     else if(ev.type === 'error'){
       sageStep('ERROR: ' + ev.message);
