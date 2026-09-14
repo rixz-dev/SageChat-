@@ -269,31 +269,6 @@
     padding:10px 16px; border-radius:10px; font-size:13px; z-index:200; box-shadow:0 8px 24px rgba(0,0,0,.4); }
   .toast.error{ border-color:#5a2c2c; color:var(--danger); }
 
-  /* ---- Sage loader sistematis (logo berputar + step log berbaris) ---- */
-  .sage-loader{ align-self:flex-start; width:100%; max-width:88%; border:1px solid var(--border); border-radius:14px;
-    background:var(--surface-2); overflow:hidden; }
-  .sage-loader-head{ display:flex; align-items:center; gap:10px; padding:10px 12px; }
-  .sage-spin{ width:30px;height:30px;border-radius:50%; background:var(--accent); display:flex;align-items:center;justify-content:center; flex-shrink:0; position:relative; }
-  .sage-spin svg{ width:18px;height:18px; animation:sage-rotate 1.1s linear infinite; }
-  @keyframes sage-rotate{ to{ transform:rotate(360deg);} }
-  .sage-spin::after{ content:''; position:absolute; inset:-4px; border-radius:50%; border:2px solid transparent; border-top-color:var(--accent-strong); animation:sage-rotate .9s linear infinite; }
-  .sage-status{ font-size:13px; font-weight:700; }
-  .sage-sub{ font-size:11px; color:var(--text-muted); }
-  .sage-steps{ border-top:1px solid var(--border); padding:8px 12px 10px 12px; display:flex; flex-direction:column; gap:4px; font-family:monospace; font-size:11px; color:var(--text-muted); max-height:180px; overflow-y:auto; }
-  .sage-step{ display:flex; gap:6px; align-items:flex-start; word-break:break-word; }
-  .sage-step .t{ color:var(--accent-strong); flex-shrink:0; }
-  .sage-loader.done .sage-spin svg{ animation:none; }
-  .sage-loader.done .sage-spin::after{ display:none; }
-  #clearLogBtn{ background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); border-radius:8px; font-size:11px; font-weight:700; padding:4px 8px; cursor:pointer; }
-  #clearLogBtn:hover{ border-color:var(--danger); color:var(--danger); }
-  .gh-status{ display:flex; align-items:center; gap:8px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:8px 10px; font-size:12px; }
-  .gh-status .dot{ width:9px;height:9px;border-radius:50%; background:var(--text-muted); flex-shrink:0; }
-  .gh-status.ok .dot{ background:var(--accent-strong); box-shadow:0 0 6px var(--accent-strong); }
-  .gh-status.err .dot{ background:var(--danger); }
-  .gh-status .txt{ flex:1; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .gh-status .btn{ padding:5px 10px; font-size:11.5px; flex-shrink:0; }
-  .user-files{ display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
-
   @media (max-width: 768px){
     .sidebar{ position:fixed; top:0; left:0; bottom:0; width:82%; max-width:300px;
       transform:translateX(-100%); transition:transform .25s ease; box-shadow:0 0 40px rgba(0,0,0,.5); z-index:50; }
@@ -373,10 +348,7 @@
   <aside class="log-drawer" id="logDrawer" hidden>
     <div class="log-head">
       <strong>Log aktivitas</strong>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <button id="clearLogBtn" title="Bersihkan semua log aktivitas">Hapus</button>
-      <button id="closeLogBtn" style="background:none;border:none;color:var(--text-muted);cursor:pointer;">✕</button>
-      </div>
+      <button id="closeLogBtn">✕</button>
     </div>
     <div class="log-body" id="logBody"></div>
   </aside>
@@ -451,8 +423,8 @@
   </div>
 </template>
 
-<input type="file" id="fileInputImage" accept="image/*" multiple hidden>
-<input type="file" id="fileInputGeneric" multiple hidden>
+<input type="file" id="fileInputImage" accept="image/*" hidden>
+<input type="file" id="fileInputGeneric" hidden>
 
 <!-- ============ MODALS ============ -->
 
@@ -524,17 +496,12 @@
   <div class="modal wide">
     <div class="modal-head"><h3>GitHub — <span id="ghRepoLabel">belum diset</span></h3><button data-close>✕</button></div>
     <div class="modal-body">
-      <div class="gh-status" id="ghStatus"><span class="dot"></span><span class="txt" id="ghStatusTxt">Belum dicek — klik Test koneksi</span><button class="btn" id="ghTestBtn" type="button">Test koneksi</button></div>
-      <div class="field"><label>Repo (owner/nama) — bisa diisi di sini, otomatis tersimpan</label><input id="ghRepoInput" placeholder="owner/nama-repo"></div>
-      <div class="row-flex" style="align-items:center;">
-        <div class="breadcrumb" id="ghBreadcrumb" style="flex:1;"></div>
-        <button class="btn" id="ghRefreshBtn" type="button" title="Muat ulang daftar file">↻</button>
-      </div>
+      <div class="breadcrumb" id="ghBreadcrumb"></div>
       <div class="tree-list" id="ghTree"></div>
       <div class="field"><label>Isi file (baca/tulis)</label><textarea id="ghFileContent" rows="8"></textarea></div>
       <div class="field"><label>Path file</label><input id="ghFilePath" placeholder="folder/nama-file.ext"></div>
       <div class="row-flex">
-        <div class="field"><label>Branch</label><input id="ghBranch" placeholder="main" list="ghBranchList"><datalist id="ghBranchList"></datalist></div>
+        <div class="field"><label>Branch</label><input id="ghBranch" placeholder="main"></div>
         <div class="field"><label>Commit message</label><input id="ghCommitMsg" placeholder="update via Sagechat"></div>
       </div>
       <div class="row-flex">
@@ -587,7 +554,7 @@ function toast(msg, isError=false){
 }
 
 function escapeHtml(s){
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 // ---------------- Tool-block parsing (<<CMD>>...<<END>> / <<GH>>...<<END>>) ----------------
@@ -597,35 +564,10 @@ function escapeHtml(s){
 const TOOL_BLOCK_RE = /<<(?:CMD|GH)>>\s*\{[\s\S]*?\}\s*<<END>>/g;
 const TOOL_OPEN_RE = /<<(?:CMD|GH)>>/;
 
-function extractJsonBlockJS(text, tag){
-  const open = '<<'+tag+'>>';
-  const i = (text||'').indexOf(open);
-  if(i === -1) return null;
-  const js = text.indexOf('{', i + open.length);
-  if(js === -1) return {start:i, end:text.length, incomplete:true};
-  let depth = 0, inStr = false, esc = false;
-  for(let k = js; k < text.length; k++){
-    const ch = text[k];
-    if(inStr){ if(esc) esc = false; else if(ch === '\\') esc = true; else if(ch === '"') inStr = false; continue; }
-    if(ch === '"') inStr = true;
-    else if(ch === '{') depth++;
-    else if(ch === '}'){ depth--; if(depth === 0){ let e = k+1; const tail = text.slice(e, e+20); const m = tail.match(/^\s*<<END>>/); if(m) e += m[0].length; return {start:i, end:e, jsonText:text.slice(js,k+1)}; } }
-  }
-  return {start:i, end:text.length, incomplete:true};
-}
 function stripToolBlocksForDisplay(text){
-  let out = text || '';
-  for(let guard = 0; guard < 5; guard++){
-    const c = extractJsonBlockJS(out, 'CMD');
-    const g = extractJsonBlockJS(out, 'GH');
-    let hit = null;
-    if(c && g) hit = c.start < g.start ? c : g;
-    else hit = c || g;
-    if(!hit) break;
-    out = (out.slice(0, hit.start) + out.slice(hit.end)).trim();
-  }
-  const oi = out.search(/<<(?:CMD|GH)>>/);
-  if(oi !== -1) out = out.slice(0, oi).trim();
+  let out = (text || '').replace(TOOL_BLOCK_RE, '').trim();
+  const openMatch = out.match(TOOL_OPEN_RE);
+  if(openMatch) out = out.slice(0, openMatch.index).trim();
   return out;
 }
 
@@ -699,10 +641,6 @@ async function openSession(id){
   $('#headerTitle').textContent = sess.title;
   const landing = $('#landing'), messagesEl = $('#messages');
   messagesEl.innerHTML = '';
-  try{ sageLoader = null; }catch(e){}
-  state.currentTurnId = null;
-  state.attachments = [];
-  try{ const ap = $('#attachPreview'); if(ap) ap.innerHTML=''; }catch(e){}
   const real = sess.messages.filter(m => !m.synthetic);
   if(real.length === 0){
     landing.hidden = false; messagesEl.hidden = true;
@@ -729,50 +667,42 @@ function buildInputBox(){
 // ---------------- Message rendering ----------------
 function renderMessage(m){
   const messagesEl = $('#messages');
-  let textContent = '';
-  try{
-    if(typeof m.content === 'string') textContent = m.content;
-    else if(Array.isArray(m.content)){ const t = m.content.find(c=>c && c.type==='text'); textContent = (t && t.text) || ''; }
-  }catch(e){ textContent = ''; }
+  const textContent = typeof m.content === 'string' ? m.content : (m.content.find(c=>c.type==='text')||{}).text || '';
   const displayText = m.role === 'assistant' ? stripToolBlocksForDisplay(textContent) : textContent;
-  const hasImage = Array.isArray(m.content) && m.content.some(c=>c && c.type==='image_url');
-  const hasFiles = Array.isArray(m.files) && m.files.length>0;
-  if(m.role === 'assistant' && !displayText.trim() && !hasImage){ return null; }
+  const hasImage = Array.isArray(m.content) && m.content.some(c=>c.type==='image_url');
+  if(m.role === 'assistant' && !displayText.trim() && !hasImage){
+    return null; // giliran ini cuma tool-call murni — sudah diwakili tool-card, gak perlu bubble kosong
+  }
+
   const wrap = document.createElement('div');
   wrap.className = 'msg ' + m.role;
+
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  try{ bubble.innerHTML = marked.parse(displayText || ''); }catch(e){ bubble.textContent = displayText || ''; }
+  bubble.innerHTML = marked.parse(displayText || '');
   bubble.dataset.raw = displayText;
-  try{ enhanceCodeBlocks(bubble); }catch(e){}
+  enhanceCodeBlocks(bubble);
+
   if(Array.isArray(m.content)){
-    m.content.filter(c=>c && c.type==='image_url').forEach(c=>{
-      try{
-        const img = document.createElement('img');
-        img.className = 'att-img'; img.src = c.image_url.url; img.loading='lazy';
-        bubble.appendChild(img);
-      }catch(e){}
+    m.content.filter(c=>c.type==='image_url').forEach(c=>{
+      const img = document.createElement('img');
+      img.className = 'att-img'; img.src = c.image_url.url;
+      bubble.appendChild(img);
     });
-  }
-  if(hasFiles){
-    const frow = document.createElement('div');
-    frow.className = 'user-files';
-    m.files.forEach(f=>{
-      const chip = document.createElement('span');
-      chip.className = 'attach-chip';
-      chip.textContent = (f.is_image ? 'img ' : 'file ') + (f.filename || 'file');
-      frow.appendChild(chip);
-    });
-    bubble.appendChild(frow);
   }
   wrap.appendChild(bubble);
+
   const actions = document.createElement('div');
   actions.className = 'msg-actions';
   actions.appendChild(makeActionBtn('copy', 'Salin', ()=> {
-    try{ navigator.clipboard.writeText(bubble.dataset.raw || ''); toast('Disalin'); }catch(e){ toast('Gagal salin', true); }
+    navigator.clipboard.writeText(bubble.dataset.raw || '');
+    toast('Disalin');
   }));
-  if(m.role === 'assistant'){ actions.appendChild(makeActionBtn('regen', 'Regenerasi', ()=> regenerate())); }
+  if(m.role === 'assistant'){
+    actions.appendChild(makeActionBtn('regen', 'Regenerasi', ()=> regenerate()));
+  }
   wrap.appendChild(actions);
+
   messagesEl.appendChild(wrap);
   return wrap;
 }
@@ -791,7 +721,6 @@ function makeActionBtn(kind, title, onClick){
 
 function enhanceCodeBlocks(bubble){
   $$('pre', bubble).forEach(pre => {
-    if(pre.closest('.code-block')) return;
     const code = pre.querySelector('code');
     if(!code) return;
     hljs.highlightElement(code);
@@ -813,40 +742,38 @@ function enhanceCodeBlocks(bubble){
 
 // ---------------- Activity log ----------------
 function logEntry(tag, summary, body, extra={}){
-  try{
-    const logBody = $('#logBody');
-    while(logBody.children.length >= 200) logBody.firstElementChild.remove();
-    const el = document.createElement('div');
-    el.className = 'log-entry';
-    const time = new Date().toLocaleTimeString();
-    el.innerHTML = `<div class="log-entry-head"><span class="tag ${tag}">${tag}</span><span class="log-entry-summary"></span><span style="color:var(--text-muted);font-size:10px;">${time}</span></div><div class="log-entry-body" hidden></div>`;
-    el.querySelector('.log-entry-summary').textContent = String(summary ?? '');
-    el.querySelector('.log-entry-body').textContent = String(body ?? '');
-    el.querySelector('.log-entry-head').addEventListener('click', ()=>{ el.querySelector('.log-entry-body').hidden = !el.querySelector('.log-entry-body').hidden; });
-    if(extra && extra.permissionId){
-      const actions = document.createElement('div');
-      actions.className = 'perm-actions';
-      actions.innerHTML = `<button class="perm-allow">Izinkan</button><button class="perm-deny">Tolak</button>`;
-      actions.querySelector('.perm-allow').addEventListener('click', ()=> respondPermission(extra.permissionId, true, actions));
-      actions.querySelector('.perm-deny').addEventListener('click', ()=> respondPermission(extra.permissionId, false, actions));
-      el.appendChild(actions);
-    }
-    logBody.appendChild(el);
-    logBody.scrollTop = logBody.scrollHeight;
-    return el;
-  }catch(e){ return null; }
+  const logBody = $('#logBody');
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  const time = new Date().toLocaleTimeString();
+  el.innerHTML = `<div class="log-entry-head">
+      <span class="tag ${tag}">${tag}</span>
+      <span class="log-entry-summary">${escapeHtml(summary)}</span>
+      <span style="color:var(--text-muted);font-size:10px;">${time}</span>
+    </div>
+    <div class="log-entry-body" hidden>${escapeHtml(body || '')}</div>`;
+  el.querySelector('.log-entry-head').addEventListener('click', ()=>{
+    el.querySelector('.log-entry-body').hidden = !el.querySelector('.log-entry-body').hidden;
+  });
+  if(extra.permissionId){
+    const actions = document.createElement('div');
+    actions.className = 'perm-actions';
+    actions.innerHTML = `<button class="perm-allow">Izinkan</button><button class="perm-deny">Tolak</button>`;
+    actions.querySelector('.perm-allow').addEventListener('click', ()=> respondPermission(extra.permissionId, true, actions));
+    actions.querySelector('.perm-deny').addEventListener('click', ()=> respondPermission(extra.permissionId, false, actions));
+    el.appendChild(actions);
+  }
+  logBody.appendChild(el);
+  logBody.scrollTop = logBody.scrollHeight;
+  return el;
 }
-function clearActivityLog(){
-  try{ $('#logBody').innerHTML=''; toast('Log aktivitas dibersihkan'); }catch(e){}
-}
+
 async function respondPermission(permId, allow, actionsEl){
-  try{
-    await api('/api/permissions/'+permId, {method:'POST', body: JSON.stringify({allow})});
-    actionsEl.innerHTML = `<span style="font-size:11px;color:var(--text-muted);padding:4px;">${allow ? 'Diizinkan' : 'Ditolak'}</span>`;
-    try{ sageStep((allow ? 'Izin diberikan' : 'Izin ditolak') + ' (' + permId + ')'); }catch(e){}
-    try{ $('#logToggleBtn').classList.remove('active-dot'); }catch(e){}
-  }catch(e){ toast('Izin gagal: '+e.message, true); }
+  await api('/api/permissions/'+permId, {method:'POST', body: JSON.stringify({allow})});
+  actionsEl.innerHTML = `<span style="font-size:11px;color:var(--text-muted);padding:4px;">${allow ? '✓ Diizinkan' : '✗ Ditolak'}</span>`;
 }
+
+// ---------------- Tool-run card (tampil di alur pesan, punya elemen buka/tutup sendiri) ----------------
 function formatBytes(n){
   if(!n || n <= 0) return '0 B';
   const units = ['B','KB','MB','GB'];
@@ -914,48 +841,19 @@ function renderSyntheticToolMessage(m){
   }
 }
 
-const SAGE_LOGO_SVG = `<svg viewBox="0 0 100 100" fill="none"><g stroke="#0A0B0A" stroke-width="7" stroke-linecap="round"><path d="M50,50 C50,32 62,20 78,22 C90,23.5 96,34 92,44 C88.5,52.5 78,55 71,50" transform="rotate(0 50 50)"/><path d="M50,50 C50,32 62,20 78,22 C90,23.5 96,34 92,44 C88.5,52.5 78,55 71,50" transform="rotate(120 50 50)"/><path d="M50,50 C50,32 62,20 78,22 C90,23.5 96,34 92,44 C88.5,52.5 78,55 71,50" transform="rotate(240 50 50)"/></g></svg>`;
-let sageLoader = null;
-function ensureSageLoader(kind){
+let runningIndicatorEl = null;
+function showRunningIndicator(kind){
+  if(runningIndicatorEl) return;
   const messagesEl = $('#messages');
-  if(sageLoader && !sageLoader.done) { if(kind && sageLoader.kind !== kind){ sageSetStatus(kind === 'github' ? 'Menyiapkan aksi GitHub...' : 'Menyiapkan command...', 'AI sedang menyusun ' + (kind === 'github' ? 'aksi GitHub' : 'perintah shell')); sageLoader.kind = kind; } return sageLoader; }
-  const el = document.createElement('div');
-  el.className = 'sage-loader';
-  el.innerHTML = `<div class="sage-loader-head"><div class="sage-spin">${SAGE_LOGO_SVG}</div><div style="flex:1;min-width:0;"><div class="sage-status">${kind === 'github' ? 'Menyiapkan aksi GitHub...' : 'Menyiapkan command...'}</div><div class="sage-sub">menghubungi AI...</div></div></div><div class="sage-steps"></div>`;
-  messagesEl.appendChild(el);
+  runningIndicatorEl = document.createElement('div');
+  runningIndicatorEl.className = 'thinking-indicator';
+  runningIndicatorEl.innerHTML = `<span class="dot-pulse"></span> ${kind === 'github' ? 'Menyiapkan aksi GitHub...' : 'Menyiapkan command...'}`;
+  messagesEl.appendChild(runningIndicatorEl);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  sageLoader = { el, kind: kind || 'shell', done:false, stepCount:0,
-    statusEl: el.querySelector('.sage-status'), subEl: el.querySelector('.sage-sub'), stepsEl: el.querySelector('.sage-steps') };
-  return sageLoader;
 }
-function sageSetStatus(main, sub){
-  if(!sageLoader) return;
-  if(main) sageLoader.statusEl.textContent = main;
-  if(sub !== undefined) sageLoader.subEl.textContent = sub;
-  $('#messages').scrollTop = $('#messages').scrollHeight;
+function hideRunningIndicator(){
+  if(runningIndicatorEl){ runningIndicatorEl.remove(); runningIndicatorEl = null; }
 }
-function sageStep(text){
-  const L = ensureSageLoader();
-  L.stepCount++;
-  const t = new Date().toLocaleTimeString();
-  const row = document.createElement('div');
-  row.className = 'sage-step';
-  row.innerHTML = `<span class="t">${t}</span><span></span>`;
-  row.lastElementChild.textContent = text;
-  L.stepsEl.appendChild(row);
-  L.stepsEl.scrollTop = L.stepsEl.scrollHeight;
-  $('#messages').scrollTop = $('#messages').scrollHeight;
-  return row;
-}
-function finishSageLoader(finalText){
-  if(!sageLoader || sageLoader.done) return;
-  sageLoader.done = true;
-  sageLoader.el.classList.add('done');
-  if(finalText) sageSetStatus(finalText, 'selesai dalam ' + sageLoader.stepCount + ' langkah');
-  else sageSetStatus('✓ Selesai', 'selesai dalam ' + sageLoader.stepCount + ' langkah');
-}
-function showRunningIndicator(kind){ ensureSageLoader(kind); sageSetStatus(kind === 'github' ? 'Menyiapkan aksi GitHub...' : 'Menyiapkan command...', 'AI sedang menyusun ' + (kind === 'github' ? 'aksi GitHub' : 'perintah shell')); }
-function hideRunningIndicator(){ /* SENGAJA tidak menghapus loader — loader sistematis menetap sebagai riwayat berbaris, tidak boleh menghilang seperti bug lama */ }
 
 // ---------------- Sending / streaming ----------------
 function setStreaming(on){
@@ -984,20 +882,13 @@ async function sendMessage(regen=false){
     $('#bottomWrap').appendChild(box);
   }
 
-  try{ if(typeof sageLoader !== 'undefined' && sageLoader && sageLoader.done) sageLoader = null; }catch(e){}
   if(!regen){
-    const atts = [...state.attachments];
-    let userMsg;
-    if(atts.some(a=>a.is_image)){
-      userMsg = { role:'user', content: [{type:'text', text}, ...atts.filter(a=>a.is_image).map(a=>({type:'image_url', image_url:{url:a.url}}))], files: atts };
-    } else if(atts.length){
-      userMsg = { role:'user', content: text, files: atts };
-    } else {
-      userMsg = { role:'user', content: text };
+    const userMsg = { role:'user', content: text };
+    if(state.attachments.some(a=>a.is_image)){
+      userMsg.content = [{type:'text', text}, ...state.attachments.filter(a=>a.is_image).map(a=>({type:'image_url', image_url:{url:a.url}}))];
     }
     renderMessage(userMsg);
     textarea.value = '';
-    textarea.style.height = 'auto';
   }
   messagesEl.scrollTop = messagesEl.scrollHeight;
 
@@ -1009,22 +900,11 @@ async function sendMessage(regen=false){
   let assistantBubbleWrap = null, assistantBubble = null, thinkingEl = null;
   let contentBuf = '';
 
-  if(!state.sessionId){ toast('Belum ada sesi aktif', true); setStreaming(false); return; }
   try{
     const res = await fetch(`/api/sessions/${state.sessionId}/send`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(regen ? {regenerate:true} : {text, attachments: attIds})
     });
-    if(!res.ok || !res.body){
-      let msg = 'Server error ('+res.status+')';
-      try{ const j = await res.json(); msg = j.error||j.message||msg; }catch(e){ try{ const t = await res.text(); if(t) msg = t.slice(0,200); }catch(e2){} }
-      toast(msg, true);
-      try{ logEntry('error', msg, ''); }catch(e){}
-      try{ finishSageLoader('Gagal'); }catch(e){}
-      setStreaming(false);
-      try{ await loadSessions(); }catch(e){}
-      return;
-    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
@@ -1043,47 +923,29 @@ async function sendMessage(regen=false){
     }
   }catch(e){
     toast('Koneksi error: '+e.message, true);
-    try{ logEntry('error', 'Koneksi error: '+e.message, ''); }catch(e2){}
-    try{ finishSageLoader('Koneksi putus'); }catch(e2){}
   }
   setStreaming(false);
-  try{ await loadSessions(); }catch(e){}
+  await loadSessions();
 
   function handleEvent(ev){
-    if(ev.type === 'turn_start'){
-      state.currentTurnId = ev.turn_id;
-      ensureSageLoader('shell');
-      sageSetStatus('Menghubungi AI...', 'menunggu respons pertama');
-      sageStep('Turn dimulai (' + ev.turn_id + ')');
-      logEntry('info', 'Turn dimulai (' + ev.turn_id + ')', '');
-    }
+    if(ev.type === 'turn_start'){ state.currentTurnId = ev.turn_id; }
     else if(ev.type === 'reasoning'){
       if(!thinkingEl) thinkingEl = logEntry('thinking', 'Sedang berpikir...', '');
-      try{ thinkingEl.querySelector('.log-entry-body').textContent += ev.text; }catch(e){}
-      sageSetStatus('AI sedang berpikir...', 'menyusun rencana / command');
+      const body = thinkingEl.querySelector('.log-entry-body');
+      body.textContent += ev.text;
     }
     else if(ev.type === 'content'){
       contentBuf += ev.text;
+      // blok <<CMD>>/<<GH>> disaring dulu — jangan pernah tampil mentah di bubble (itu penyebab
+      // balasan AI kelihatan aneh & bikin kotak melebar keluar)
       const displayText = stripToolBlocksForDisplay(contentBuf);
       const runKind = detectRunningToolKind(contentBuf);
-      if(runKind){
-        showRunningIndicator(runKind);
-        try{
-          const blk = extractJsonBlockJS(contentBuf, runKind === 'github' ? 'GH' : 'CMD');
-          if(blk && blk.jsonText){
-            const d = JSON.parse(blk.jsonText);
-            if(runKind === 'github') sageSetStatus('Menyiapkan aksi GitHub: ' + (d.action || ''), d.reason || d.path || '');
-            else sageSetStatus('Menyiapkan command...', (d.reason || d.cmd || '').slice(0, 120));
-          }
-        }catch(e){}
-      } else {
-        if(displayText) sageSetStatus('Menulis jawaban...', 'streaming teks');
-      }
+      if(runKind) showRunningIndicator(runKind); else hideRunningIndicator();
       if(displayText){
         if(!assistantBubbleWrap){
           assistantBubbleWrap = renderMessage({role:'assistant', content: displayText});
-          assistantBubble = assistantBubbleWrap ? assistantBubbleWrap.querySelector('.bubble') : null;
-        } else if(assistantBubble){
+          assistantBubble = assistantBubbleWrap.querySelector('.bubble');
+        } else {
           assistantBubble.innerHTML = marked.parse(displayText);
           assistantBubble.dataset.raw = displayText;
           enhanceCodeBlocks(assistantBubble);
@@ -1092,49 +954,36 @@ async function sendMessage(regen=false){
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
     else if(ev.type === 'tool_result'){
-      const summary = ev.kind === 'github' ? `GitHub: ${ev.action} \u2014 ${ev.success?'ok':'gagal'}` : `Command \u2014 exit ${ev.exit_code}`;
-      let stepTxt = summary;
-      if(ev.cmd) stepTxt += ' | ' + String(ev.cmd).slice(0, 120);
-      if(Array.isArray(ev.downloads) && ev.downloads.length){
-        const names = ev.downloads.map(d=>d.filename).join(', ');
-        stepTxt += ' \u2014 file siap didownload: ' + names;
-        toast('File dari AI siap: ' + names);
-      }
-      sageStep(stepTxt);
-      sageSetStatus(ev.kind === 'github' ? 'Aksi GitHub selesai, menunggu AI...' : `Command selesai (exit ${ev.exit_code}), menunggu AI...`, summary);
+      hideRunningIndicator();
+      const summary = ev.kind === 'github' ? `GitHub: ${ev.action} — ${ev.success?'ok':'gagal'}` : `Command — exit ${ev.exit_code}`;
       logEntry(ev.kind === 'github' ? 'github' : 'run', summary, ev.output || '');
       renderToolCard(ev.kind, summary, ev.output || '', ev.success, ev.downloads);
+      // giliran tool ini selesai; teks berikutnya (kalau ada) mulai bubble assistant baru
       assistantBubbleWrap = null; assistantBubble = null; contentBuf = '';
     }
     else if(ev.type === 'permission_request'){
+      hideRunningIndicator();
       const summary = ev.kind === 'github_write'
-        ? `Izin GitHub: ${ev.action} \u2192 ${ev.path||ev.new_branch||ev.branch||''}`
+        ? `Izin GitHub: ${ev.action} → ${ev.path||ev.new_branch||ev.branch||''}`
         : `Izin shell di luar sandbox: ${ev.cmd}`;
-      sageStep('Meminta izin: ' + summary + ' \u2014 menunggu kamu klik Izinkan/Tolak');
-      sageSetStatus('Menunggu izin kamu...', summary);
       logEntry('permission', summary, JSON.stringify(ev, null, 2), {permissionId: ev.permission_id});
       openLogDrawer();
-      try{ $('#logToggleBtn').classList.add('active-dot'); }catch(e){}
     }
     else if(ev.type === 'error'){
-      sageStep('ERROR: ' + ev.message);
-      finishSageLoader('Terjadi error');
+      hideRunningIndicator();
       logEntry('error', ev.message, '');
       toast(ev.message, true);
     }
     else if(ev.type === 'info'){
-      sageStep(ev.message);
       logEntry('info', ev.message, '');
     }
     else if(ev.type === 'stopped'){
-      sageStep('Dihentikan oleh user');
-      finishSageLoader('Dihentikan');
+      hideRunningIndicator();
       logEntry('info', 'Dihentikan oleh user', '');
     }
     else if(ev.type === 'done'){
-      finishSageLoader();
+      hideRunningIndicator();
       state.currentTurnId = null;
-      try{ $('#logToggleBtn').classList.remove('active-dot'); }catch(e){}
     }
   }
 }
@@ -1145,7 +994,6 @@ async function regenerate(){
   while(messagesEl.lastElementChild && !messagesEl.lastElementChild.classList.contains('user')){
     messagesEl.lastElementChild.remove();
   }
-  try{ sageLoader = null; }catch(e){}
   await sendMessage(true);
 }
 
@@ -1204,25 +1052,13 @@ function wireInputBox(){
 async function uploadFile(file){
   const fd = new FormData();
   fd.append('file', file);
-  let res;
-  try{ res = await fetch('/api/upload', {method:'POST', body: fd}); }
-  catch(e){ toast('Upload gagal: koneksi putus', true); return null; }
-  if(!res.ok){
-    let msg = 'Upload gagal';
-    try{ const j = await res.json(); msg = j.error || msg; }catch(e){ try{ const t = await res.text(); if(t) msg = t.slice(0,200); }catch(e2){} }
-    toast(msg, true);
-    return null;
-  }
-  let meta = null;
-  try{ meta = await res.json(); }catch(e){ toast('Upload gagal: respons rusak', true); return null; }
+  const res = await fetch('/api/upload', {method:'POST', body: fd});
+  if(!res.ok){ toast('Upload gagal', true); return; }
+  const meta = await res.json();
   state.attachments.push(meta);
   renderAttachPreview();
-  return meta;
 }
-async function uploadFiles(fileList){
-  const files = Array.from(fileList || []);
-  for(const f of files){ await uploadFile(f); }
-}
+
 function renderAttachPreview(){
   const el = $('#attachPreview');
   el.innerHTML = '';
@@ -1355,97 +1191,41 @@ async function renderMemoryList(){
 
 async function openGithubModal(){
   openModal('modalGithub');
-  try{ state.config = await api('/api/config'); }catch(e){}
-  const repoInput = $('#ghRepoInput');
-  if(repoInput && !repoInput.value) repoInput.value = state.config.github_repo || '';
-  $('#ghRepoLabel').textContent = state.config.github_repo || 'belum diset \u2014 isi kolom repo di bawah lalu Test koneksi';
+  $('#ghRepoLabel').textContent = state.config.github_repo || 'belum diset (isi di Pengaturan)';
   state.ghCurrentPath = '';
-  setGhStatus('', 'Belum dicek \u2014 klik Test koneksi');
-  await ghTestConnection(true);
-}
-function setGhStatus(kind, txt){
-  try{
-    const box = $('#ghStatus');
-    const t = $('#ghStatusTxt');
-    if(t) t.textContent = txt;
-    if(box){ box.classList.remove('ok','err'); if(kind) box.classList.add(kind); }
-  }catch(e){}
-}
-async function ghTestConnection(silent){
-  const repoVal = ($('#ghRepoInput')||{}).value || '';
-  const repo = repoVal.trim();
-  // repo inline otomatis tersimpan \u2014 user tidak perlu buka Pengaturan dulu (konektor dipermudah)
-  if(repo && repo !== state.config.github_repo){
-    try{
-      state.config = await api('/api/config', {method:'POST', body: JSON.stringify({github_repo: repo})});
-      $('#ghRepoLabel').textContent = state.config.github_repo || repo;
-    }catch(e){ if(!silent) toast('Gagal simpan repo: '+e.message, true); }
-  }
-  setGhStatus('', 'Mengecek koneksi...');
-  try{
-    const r = await fetch('/api/github_status');
-    const st = await r.json();
-    if(st.connected){
-      setGhStatus('ok', 'Terhubung: ' + st.repo + ' @ ' + st.default_branch);
-      try{
-        const dl = $('#ghBranchList');
-        if(dl){ dl.innerHTML=''; (st.branches||[]).forEach(b=>{ const o=document.createElement('option'); o.value=b; dl.appendChild(o); }); }
-        if(!$('#ghBranch').value) $('#ghBranch').value = st.default_branch || '';
-      }catch(e){}
-      state.ghCurrentPath = '';
-      await ghLoadTree('');
-      await ghLoadWorkflows();
-    } else {
-      setGhStatus('err', 'Belum terhubung: ' + (st.reason || 'cek token/repo'));
-      if(!silent) toast('GitHub: ' + (st.reason || 'belum terhubung'), true);
-      $('#ghTree').innerHTML = `<p style="color:var(--text-muted);font-size:12px;">Isi GitHub Token di Pengaturan + repo di atas, lalu klik Test koneksi.</p>`;
-    }
-  }catch(e){ setGhStatus('err', 'Gagal cek: '+e.message); if(!silent) toast('Gagal cek GitHub: '+e.message, true); }
+  await ghLoadTree('');
+  await ghLoadWorkflows();
 }
 
 // Aksi GitHub dari panel dieksekusi langsung lewat /api/github_direct (lihat ghApi di bawah) —
 // beda jalur dari aksi GitHub yang diminta AI lewat obrolan (yang wajib permission-gate).
 async function ghApi(action, extra={}){
-  try{
-    const repoVal = ($('#ghRepoInput')||{}).value || '';
-    const body = {action, ...extra};
-    if(repoVal.trim() && !body.repo) body.repo = repoVal.trim();
-    const res = await fetch('/api/github_direct', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    try{ return await res.json(); }
-    catch(e){ return {success:false, error:'Respons server rusak ('+res.status+')'}; }
-  }catch(e){ return {success:false, error:'Koneksi gagal: '+e.message}; }
+  const res = await fetch('/api/github_direct', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action, ...extra})});
+  return res.json();
 }
 
 async function ghLoadTree(path){
+  const data = await ghApi('list_tree', {path});
   const treeEl = $('#ghTree');
   const bc = $('#ghBreadcrumb');
-  const parts = String(path||'').split('/').filter(Boolean);
-  bc.innerHTML = `<span data-path="">root</span>` + parts.map((p,i)=> ` / <span data-path="${parts.slice(0,i+1).join('/')}">${escapeHtml(p)}</span>`).join('');
-  $$('span', bc).forEach(sp => sp.addEventListener('click', ()=> ghLoadTree(sp.dataset.path)));
-  treeEl.innerHTML = `<p style="color:var(--text-muted);font-size:12px;">Memuat...</p>`;
-  let data;
-  try{ data = await ghApi('list_tree', {path}); }
-  catch(e){ data = {success:false, error:String(e.message||e)}; }
+  const parts = path.split('/').filter(Boolean);
+  bc.innerHTML = `<span data-path="">root</span>` + parts.map((p,i)=>
+    ` / <span data-path="${parts.slice(0,i+1).join('/')}">${escapeHtml(p)}</span>`).join('');
+  $$('span', bc).forEach(s => s.addEventListener('click', ()=> ghLoadTree(s.dataset.path)));
+
   treeEl.innerHTML = '';
-  if(!data.success && data.error){ treeEl.innerHTML = `<p style="color:var(--danger);font-size:12px;">${escapeHtml(data.error)}</p>`; return; }
-  const items = data.items || [];
-  if(!items.length){ treeEl.innerHTML = `<p style="color:var(--text-muted);font-size:12px;">Folder kosong.</p>`; }
-  items.forEach(item => {
+  if(data.error){ treeEl.innerHTML = `<p style="color:var(--danger);font-size:12px;">${escapeHtml(data.error)}</p>`; return; }
+  (data.items||[]).forEach(item => {
     const el = document.createElement('div');
     el.className = 'tree-item';
-    const nm = document.createElement('span');
-    nm.textContent = (item.type==='dir'?'\U0001F4C1 ':'\U0001F4C4 ') + item.name;
-    el.appendChild(nm);
+    el.innerHTML = `<span>${item.type==='dir'?'📁':'📄'} ${escapeHtml(item.name)}</span>`;
     el.addEventListener('click', async ()=>{
       if(item.type === 'dir'){ ghLoadTree(item.path); }
       else {
-        el.style.opacity='.5';
-        try{
-          const r = await ghApi('read_file', {path: item.path});
-          $('#ghFilePath').value = item.path;
-          $('#ghFileContent').value = r.content || r.error || '';
-          if(!r.content) toast(r.error||'Gagal baca file', true);
-        }finally{ el.style.opacity=''; }
+        const r = await ghApi('read_file', {path: item.path});
+        $('#ghFilePath').value = item.path;
+        $('#ghFileContent').value = r.content || r.error || '';
       }
     });
     treeEl.appendChild(el);
@@ -1454,19 +1234,12 @@ async function ghLoadTree(path){
 }
 
 async function ghLoadWorkflows(){
+  const data = await ghApi('list_workflows', {});
   const sel = $('#ghWorkflowSelect');
-  if(!sel) return;
   sel.innerHTML = '';
-  let data = {items:[]};
-  try{ data = await ghApi('list_workflows', {}); }catch(e){ data = {items:[]}; }
-  const items = data.items || [];
-  if(!items.length){
-    const o=document.createElement('option'); o.value=''; o.textContent='(tidak ada workflow)'; sel.appendChild(o);
-    return;
-  }
-  items.forEach(w => {
+  (data.items||[]).forEach(w => {
     const opt = document.createElement('option');
-    opt.value = String(w.path||'').split('/').pop();
+    opt.value = w.path.split('/').pop();
     opt.textContent = w.name;
     sel.appendChild(opt);
   });
@@ -1513,61 +1286,40 @@ function wireGlobalUI(){
   $('#saveSettingsBtn').addEventListener('click', saveSettings);
   $('#addMemoryBtn').addEventListener('click', addMemory);
 
-  try{ const cb = $('#clearLogBtn'); if(cb) cb.addEventListener('click', clearActivityLog); }catch(e){}
-  try{ document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') $$('.modal-overlay').forEach(m=>m.hidden=true); }); }catch(e){}
-  try{ const mi=$('#memoryInput'); if(mi) mi.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ e.preventDefault(); addMemory(); } }); }catch(e){}
-  $('#fileInputImage').addEventListener('change', async (e)=>{
-    if(e.target.files && e.target.files.length) await uploadFiles(e.target.files);
+  $('#fileInputImage').addEventListener('change', (e)=>{
+    if(e.target.files[0]) uploadFile(e.target.files[0]);
     e.target.value = '';
   });
-  $('#fileInputGeneric').addEventListener('change', async (e)=>{
-    if(e.target.files && e.target.files.length) await uploadFiles(e.target.files);
+  $('#fileInputGeneric').addEventListener('change', (e)=>{
+    if(e.target.files[0]) uploadFile(e.target.files[0]);
     e.target.value = '';
   });
-  try{
-    const tb=$('#ghTestBtn'); if(tb) tb.addEventListener('click', ()=> ghTestConnection(false));
-    const rb=$('#ghRefreshBtn'); if(rb) rb.addEventListener('click', ()=> ghLoadTree(state.ghCurrentPath||''));
-    const ri=$('#ghRepoInput'); if(ri) ri.addEventListener('change', ()=> ghTestConnection(true));
-  }catch(e){}
 
   $('#ghSaveFileBtn').addEventListener('click', async ()=>{
-    const btn = $('#ghSaveFileBtn');
     const path = $('#ghFilePath').value.trim();
     if(!path) return toast('Isi path file dulu', true);
-    btn.disabled = true; const oldT = btn.textContent; btn.textContent = 'Menyimpan...';
-    try{
-      const r = await ghApi('save_file', {path, content: $('#ghFileContent').value,
-        message: $('#ghCommitMsg').value || 'update via Sagechat', branch: $('#ghBranch').value || undefined});
-      toast(r.output || r.error || 'selesai', !r.success);
-      if(r.success) ghLoadTree(state.ghCurrentPath);
-    }finally{ btn.disabled = false; btn.textContent = oldT; }
+    const r = await ghApi('create_file', {path, content: $('#ghFileContent').value,
+      message: $('#ghCommitMsg').value || 'update via Sagechat', branch: $('#ghBranch').value || undefined});
+    toast(r.output || r.error || 'selesai', !r.success);
+    if(r.success) ghLoadTree(state.ghCurrentPath);
   });
   $('#ghDeleteFileBtn').addEventListener('click', async ()=>{
     const path = $('#ghFilePath').value.trim();
     if(!path || !confirm('Yakin hapus '+path+'?')) return;
-    try{
-      const r = await ghApi('delete_file', {path, message: $('#ghCommitMsg').value || 'delete via Sagechat',
-        branch: $('#ghBranch').value || undefined});
-      toast(r.output || r.error || 'selesai', !r.success);
-      if(r.success) ghLoadTree(state.ghCurrentPath);
-    }catch(e){ toast('Hapus gagal: '+e.message, true); }
+    const r = await ghApi('delete_file', {path, message: $('#ghCommitMsg').value || 'delete via Sagechat',
+      branch: $('#ghBranch').value || undefined});
+    toast(r.output || r.error || 'selesai', !r.success);
+    if(r.success) ghLoadTree(state.ghCurrentPath);
   });
   $('#ghPrBtn').addEventListener('click', async ()=>{
-    const head = $('#ghPrHead').value.trim();
-    if(!head) return toast('Isi branch sumber (head) dulu', true);
-    try{
-      const r = await ghApi('create_pr', {branch: head, base_branch: $('#ghPrBase').value || undefined,
-        title: $('#ghPrTitle').value || 'PR via Sagechat'});
-      toast(r.output || r.error || 'selesai', !r.success);
-    }catch(e){ toast('Buat PR gagal: '+e.message, true); }
+    const r = await ghApi('create_pr', {branch: $('#ghPrHead').value, base_branch: $('#ghPrBase').value || undefined,
+      title: $('#ghPrTitle').value || 'PR via Sagechat'});
+    toast(r.output || r.error || 'selesai', !r.success);
   });
   $('#ghDispatchBtn').addEventListener('click', async ()=>{
-    if(!$('#ghWorkflowSelect').value) return toast('Tidak ada workflow tersedia', true);
-    try{
-      const r = await ghApi('trigger_workflow', {workflow_file: $('#ghWorkflowSelect').value,
-        ref: $('#ghWorkflowRef').value || undefined});
-      toast(r.output || r.error || 'selesai', !r.success);
-    }catch(e){ toast('Trigger gagal: '+e.message, true); }
+    const r = await ghApi('trigger_workflow', {workflow_file: $('#ghWorkflowSelect').value,
+      ref: $('#ghWorkflowRef').value || undefined});
+    toast(r.output || r.error || 'selesai', !r.success);
   });
 }
 
